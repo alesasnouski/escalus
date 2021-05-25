@@ -46,10 +46,11 @@
 auth_plain(Conn, Props) ->
     Username = get_property(username, Props),
     Password = get_property(password, Props),
+    Timeout = get_property(timeout, Props),
     Payload = <<0:8,Username/binary,0:8,Password/binary>>,
     Stanza = escalus_stanza:auth(<<"PLAIN">>, [base64_cdata(Payload)]),
     ok = escalus_connection:send(Conn, Stanza),
-    wait_for_success(Username, Conn).
+    wait_for_success(Username, Conn, Timeout).
 
 -spec auth_digest_md5(client(), user_spec()) -> ok.
 auth_digest_md5(Conn, Props) ->
@@ -268,15 +269,19 @@ maybe_decode(CData, DecodeCsvkv) ->
     end.
 
 %% Throws!
--spec wait_for_success(any(), client()) -> ok.
-wait_for_success(Username, Conn) ->
-    AuthReply = escalus_connection:get_stanza(Conn, auth_reply),
+-spec wait_for_success(any(), client(), timeout()) -> ok.
+wait_for_success(Username, Conn, Timeout) ->
+    AuthReply = escalus_connection:get_stanza(Conn, auth_reply, Timeout),
     case AuthReply#xmlel.name of
         <<"success">> ->
             ok;
         R when R =:= <<"failure">> orelse R =:= <<"stream:error">> ->
             throw({auth_failed, Username, AuthReply})
     end.
+
+-spec wait_for_success(any(), client()) -> ok.
+wait_for_success(Username, Conn) ->
+    wait_for_success(Username, Conn, escalus_connection:default_timeout()).
 
 get_property(PropName, Proplist) ->
     case lists:keyfind(PropName, 1, Proplist) of

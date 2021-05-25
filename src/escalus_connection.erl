@@ -14,6 +14,7 @@
 
 %% Low-level API
 -export([connect/1,
+         default_timeout/0,
          maybe_set_jid/1,
          send_and_receive/3,
          send/2,
