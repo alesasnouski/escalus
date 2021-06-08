@@ -12,6 +12,8 @@
 -include_lib("exml/include/exml.hrl").
 -include("escalus.hrl").
 
+-define(HIBERNATE_TIMEOUT, 5000).
+
 %% Escalus transport callbacks
 -export([connect/1,
          send/2,
@@ -221,10 +223,10 @@ init([Opts0, Owner]) ->
 -spec handle_call(term(), {pid(), term()}, state()) ->
     {reply, term(), state()} | {stop, normal, ok, state()}.
 handle_call(get_sm_h, _From, #state{sm_state = {_, H, _}} = State) ->
-    {reply, H, State};
+    {reply, H, State, ?HIBERNATE_TIMEOUT};
 handle_call({set_sm_h, H}, _From, #state{sm_state = {A, _OldH, S}} = State) ->
     NewState = State#state{sm_state={A, H, S}},
-    {reply, {ok, H}, NewState};
+    {reply, {ok, H}, NewState, ?HIBERNATE_TIMEOUT};
 handle_call({upgrade_to_tls, SSLOpts}, _From, #state{socket = Socket,
                                                      tls_module = TLSMod} = State) ->
     SSLOpts1 = [{reuse_sessions, true}],
@@ -233,9 +235,9 @@ handle_call({upgrade_to_tls, SSLOpts}, _From, #state{socket = Socket,
         {ok, TlsSocket} ->
             {ok, Parser} = exml_stream:new_parser(),
             {reply, TlsSocket, State#state{socket = TlsSocket, parser = Parser,
-                                           ssl = true, tls_module = TLSMod}};
+                                           ssl = true, tls_module = TLSMod}, ?HIBERNATE_TIMEOUT};
         {error, _} = E ->
-            {reply, E, State}
+            {reply, E, State, ?HIBERNATE_TIMEOUT}
     end;
 handle_call(use_zlib, _, #state{parser = Parser} = State) ->
     Zin = zlib:open(),
@@ -244,25 +246,25 @@ handle_call(use_zlib, _, #state{parser = Parser} = State) ->
     ok = zlib:deflateInit(Zout),
     {ok, NewParser} = exml_stream:reset_parser(Parser),
     {reply, ok, State#state{parser = NewParser,
-                            compress = {zlib, {Zin, Zout}}}};
+                            compress = {zlib, {Zin, Zout}}}, ?HIBERNATE_TIMEOUT};
 handle_call(get_active, _From, #state{active = Active} = State) ->
-    {reply, Active, State};
+    {reply, Active, State, ?HIBERNATE_TIMEOUT};
 handle_call(get_compress, _From, #state{compress = Compress} = State) ->
-    {reply, Compress, State};
+    {reply, Compress, State, ?HIBERNATE_TIMEOUT};
 handle_call(get_ssl, _From, #state{ssl = false} = State) ->
-    {reply, false, State};
+    {reply, false, State, ?HIBERNATE_TIMEOUT};
 handle_call(get_ssl, _From, #state{ssl = _} = State) ->
-    {reply, true, State};
+    {reply, true, State, ?HIBERNATE_TIMEOUT};
 handle_call({set_active, Active}, _From, State) ->
-    {reply, ok, set_active_opt(State,Active)};
+    {reply, ok, set_active_opt(State,Active), ?HIBERNATE_TIMEOUT};
 handle_call({set_filter_pred, Pred}, _From, State) ->
-    {reply, ok, State#state{filter_pred = Pred}};
+    {reply, ok, State#state{filter_pred = Pred}, ?HIBERNATE_TIMEOUT};
 handle_call(get_tls_last_message, _From,
             #state{socket = Socket, ssl = true, tls_module = fast_tls} = S) ->
     Reply = fast_tls:get_tls_last_message(self, Socket),
-    {reply, Reply, S};
+    {reply, Reply, S, ?HIBERNATE_TIMEOUT};
 handle_call(get_tls_last_message, _From, #state{} = S) ->
-    {reply, {error, undefined_tls_message}, S};
+    {reply, {error, undefined_tls_message}, S, ?HIBERNATE_TIMEOUT};
 handle_call(kill_connection, _, #state{socket = Socket, ssl = SSL, tls_module = TLSMod} = S) ->
     case SSL of
         true -> TLSMod:close(Socket);
@@ -279,28 +281,28 @@ handle_call(stop, _From, S) ->
     {noreply, state()} | {stop, term(), state()}.
 handle_cast({send, Data}, #state{ on_request = OnRequestFun } = State)  when is_binary(Data) ->
     OnRequestFun(maybe_compress_and_send(Data, State)),
-    {noreply, State};
+    {noreply, State, ?HIBERNATE_TIMEOUT};
 handle_cast({send, StreamLevelElement}, #state{ on_request = OnRequestFun } = State) ->
     OnRequestFun(maybe_compress_and_send(exml:to_iolist(StreamLevelElement), State)),
-    {noreply, State};
+    {noreply, State, ?HIBERNATE_TIMEOUT};
 handle_cast(reset_parser, #state{parser = Parser} = State) ->
     {ok, NewParser} = exml_stream:reset_parser(Parser),
-    {noreply, State#state{parser = NewParser}};
+    {noreply, State#state{parser = NewParser}, ?HIBERNATE_TIMEOUT};
 handle_cast(stop, State) ->
     {stop, normal, State}.
 
 -spec handle_info(term(), state()) -> {noreply, state()} | {stop, term(), state()}.
 handle_info({tcp, Socket, Data}, #state{socket = Socket, ssl = false} = State) ->
     NewState = handle_data(Socket, Data, State),
-    {noreply, NewState};
+    {noreply, NewState, ?HIBERNATE_TIMEOUT};
 handle_info({ssl, Socket, Data}, #state{socket = Socket, ssl = true, tls_module = ssl} = State) ->
     NewState = handle_data(Socket, Data, State),
-    {noreply, NewState};
+    {noreply, NewState, ?HIBERNATE_TIMEOUT};
 handle_info({tcp, TcpSocket, Data}, #state{socket = {tlssock, TcpSocket, _} = TlsSocket,
                                            ssl = true, tls_module = fast_tls} = State) ->
     {ok, NewData} = fast_tls:recv_data(TlsSocket, Data),
     NewState = handle_data(TlsSocket, NewData, State),
-    {noreply, NewState};
+    {noreply, NewState, ?HIBERNATE_TIMEOUT};
 handle_info({tcp_closed, _Socket}, #state{} = State) ->
     {stop, normal, State};
 handle_info({ssl_closed, _Socket}, #state{} = State) ->
@@ -310,7 +312,7 @@ handle_info({tcp_error, _Socket, Reason}, #state{} = State) ->
 handle_info({ssl_error, _Socket, Reason}, #state{} = State) ->
     {stop, {error, Reason}, State};
 handle_info(_, State) ->
-    {noreply, State}.
+    {noreply, State, ?HIBERNATE_TIMEOUT}.
 
 -spec terminate(term(), state()) -> term().
 terminate(Reason, #state{socket = Socket, ssl = true, tls_module = TLSMod} = State) ->
